@@ -1044,88 +1044,13 @@ getReStruc <- function(reTrms, ss=NULL, aa=NULL, reXterms=NULL, fr=NULL, full_co
                "homtoep" = blksize,
                "equalto" = blksize * (blksize+1) / 2, #equalto (same as us)
                "indisting" = {
-                 if (blksize %% 2 != 0)
-                   stop("indisting() requires an even number of random effect terms")
-                 blksize/2 + (blksize/2)^2
+                 k_ind <- blksize / 2
+                 k_ind + k_ind^2
                },
                stop(sprintf("undefined number of parameters for covstruct '%s'", struc))
                )
     }
     blockNumTheta <- mapply(parFun, ss, blksize, blkrank, SIMPLIFY=FALSE)
-    # --- Validate indisting column ordering ---
-    check_indisting_order <- function(cnms, group = "group") {
-      is_bare   <- !grepl(":", cnms)
-      persons   <- cnms[is_bare]
-      n_persons <- length(persons)
-      if (n_persons < 2)
-        stop("indisting() requires at least 2 person indicator terms (e.g. P1 and P2)")
-      get_vartype <- function(nm) {
-        if (nm %in% persons) return("")
-        for (p in persons) {
-          nm <- gsub(paste0("^", p, ":"), "", nm)
-          nm <- gsub(paste0(":", p, "$"), "", nm)
-        }
-        nm
-      }
-      get_person <- function(nm) {
-        if (nm %in% persons) return(nm)
-        for (p in persons) {
-          if (grepl(paste0("^", p, ":"), nm) || grepl(paste0(":", p, "$"), nm))
-            return(p)
-        }
-        return(NA)
-      }
-      vartypes     <- sapply(cnms, get_vartype)
-      person_ids   <- sapply(cnms, get_person)
-      unique_types <- unique(vartypes)
-      for (vt in unique_types) {
-        idx <- which(vartypes == vt)
-        if (length(idx) != n_persons)
-          stop(sprintf(
-            "indisting(): variable type '%s' appears %d time(s) but should appear %d time(s) -- once for each person indicator (%s).",
-            vt, length(idx), n_persons, paste(persons, collapse = ", ")))
-        if (!all(diff(idx) == 1)) {
-          correct_terms <- c(persons)
-          for (other_vt in unique_types[unique_types != ""])
-            for (p in persons)
-              correct_terms <- c(correct_terms, paste(p, other_vt, sep = ":"))
-          correct_formula <- paste("indisting(0 +",
-                                   paste(correct_terms, collapse = " + "),
-                                   "|", group, ")")
-          stop(paste0(
-            "indisting() requires like-variable terms to be adjacent in the formula.\n",
-            "  Variable type '", vt, "' is not grouped consecutively.\n",
-            "  The correct ordering for your terms would be:\n",
-            "  ", correct_formula))
-        }
-        if (vt != "") {
-          person_order_in_group <- unname(person_ids[idx])
-          if (!identical(person_order_in_group, persons)) {
-            correct_terms <- c(persons)
-            for (other_vt in unique_types[unique_types != ""])
-              for (p in persons)
-                correct_terms <- c(correct_terms, paste(p, other_vt, sep = ":"))
-            correct_formula <- paste("indisting(0 +",
-                                     paste(correct_terms, collapse = " + "),
-                                     "|", group, ")")
-            stop(paste0(
-              "indisting() requires consistent person ordering across all variable types.\n",
-              "  For variable type '", vt, "', persons appear in order: ",
-              paste(person_order_in_group, collapse = ", "), "\n",
-              "  but the expected order is: ",
-              paste(persons, collapse = ", "), "\n",
-              "  The correct ordering for your terms would be:\n",
-              "  ", correct_formula))
-          }
-        }
-      }
-      invisible(TRUE)
-    }
-    for (i in seq_along(ss)) {
-      if (ss[[i]] == "indisting") {
-        check_indisting_order(reTrms$cnms[[i]], names(reTrms$cnms)[i])
-      }
-    }
 
     covCode <- .valid_covstruct[ss]
 
@@ -1405,6 +1330,65 @@ glmmTMB <- function(
     # substitute evaluated versions
     ## FIXME: denv leftover from lme4, not defined yet
 
+  validate_indisting <- function(formula, data) {
+    parsed <- reformulas::splitForm(formula, allowFixedOnly = FALSE,
+                                    specials = names(.valid_covstruct))
+    for (i in seq_along(parsed$reTrmClasses)) {
+      if (parsed$reTrmClasses[i] != "indisting") next
+      re_formula <- parsed$reTrmFormulas[[i]]
+      group_var  <- deparse(re_formula[[3]])
+      re_lhs     <- re_formula[[2]]
+      lhs_str    <- gsub("\\s+", " ",
+                         paste(deparse(re_lhs), collapse = ""))
+      lhs_terms  <- terms(as.formula(paste("~", lhs_str)))
+      if (attr(lhs_terms, "intercept") == 1)
+        stop(paste0(
+          "indisting(): formula must not include an intercept.\n",
+          "Use: indisting(0 + memberVar + memberVar:x | ", group_var, ")",
+          "\nwhere memberVar is a factor variable with exactly 2 levels."
+        ))
+      re_terms <- attr(lhs_terms, "term.labels")
+      if (length(re_terms) == 0)
+        stop(paste0(
+          "indisting(): formula has no terms.\n",
+          "Use: indisting(0 + memberVar + memberVar:x | ", group_var, ")",
+          "\nwhere memberVar is a factor variable with exactly 2 levels."
+        ))
+      member_var <- re_terms[1]
+      if (!member_var %in% names(data))
+        stop(paste0(
+          "indisting(): first term \"", member_var, "\" not found in data.\n",
+          "Use: indisting(0 + memberVar + memberVar:x | ", group_var, ")",
+          "\nwhere memberVar is a factor variable with exactly 2 levels."
+        ))
+      if (!is.factor(data[[member_var]]))
+        stop(paste0(
+          "indisting(): \"", member_var, "\" must be a factor variable.\n",
+          "Use: indisting(0 + memberVar + memberVar:x | ", group_var, ")",
+          "\nwhere memberVar is a factor variable with exactly 2 levels."
+        ))
+      if (nlevels(data[[member_var]]) != 2L)
+        stop(paste0(
+          "indisting(): \"", member_var, "\" must have exactly 2 levels.\n",
+          "Use: indisting(0 + memberVar + memberVar:x | ", group_var, ")",
+          "\nwhere memberVar is a factor variable with exactly 2 levels."
+        ))
+      if (length(re_terms) > 1) {
+        slope_terms <- re_terms[-1]
+        bad <- slope_terms[!grepl(paste0("^", member_var, ":"), slope_terms)]
+        if (length(bad) > 0)
+          stop(paste0(
+            "indisting(): all slope terms must interact with \"",
+            member_var, "\".\n",
+            "Unexpected terms: ", paste(bad, collapse = ", "), ".\n",
+            "Use: indisting(0 + ", member_var, " + ",
+            member_var, ":x | ", group_var, ")"
+          ))
+      }
+    }
+    invisible(NULL)
+  }
+  if (!is.null(data)) validate_indisting(formula, data)
     environment(formula) <- parent.frame()
     call$formula <- mc$formula <- formula
     ## add offset-specified-as-argument to formula as + offset(...)
